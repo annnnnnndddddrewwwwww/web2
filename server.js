@@ -1,48 +1,50 @@
 // server.js
 const express = require('express');
-const { Pool } = require('pg');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
 const cors = require('cors');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Conexión a la base de datos usando la URL de Render
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-        rejectUnauthorized: false
-    }
-});
+// Configuración de la hoja de cálculo
+const doc = new GoogleSpreadsheet(process.env.SHEET_ID);
 
-// Inicializar la tabla de reservas si no existe
-async function initializeDb() {
+// Credenciales de la cuenta de servicio (obtenidas de las variables de entorno)
+const serviceAccountAuth = {
+    client_email: process.env.CLIENT_EMAIL,
+    private_key: process.env.PRIVATE_KEY.replace(/\\n/g, '\n'),
+};
+
+// Función para conectar a la hoja y cargarla
+async function connectToSheet() {
     try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS reservations (
-                id SERIAL PRIMARY KEY,
-                date VARCHAR(255) NOT NULL,
-                time VARCHAR(255) NOT NULL,
-                status VARCHAR(50) DEFAULT 'reservado',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        `);
-        console.log("Tabla 'reservations' verificada o creada con éxito.");
+        await doc.useServiceAccountAuth(serviceAccountAuth);
+        await doc.loadInfo();
+        console.log(`Hoja de cálculo "${doc.title}" cargada.`);
     } catch (err) {
-        console.error('Error al inicializar la base de datos', err);
+        console.error('Error al conectar a la hoja de cálculo:', err);
     }
 }
+
+// Inicializar la conexión
+connectToSheet();
 
 // Endpoint para obtener todas las reservas
 app.get('/api/reservations', async (req, res) => {
     try {
-        const result = await pool.query('SELECT date, time FROM reservations WHERE status = $1', ['reservado']);
+        const sheet = doc.sheetsByIndex[0];
+        const rows = await sheet.getRows();
         const bookedSlots = {};
-        result.rows.forEach(row => {
-            if (!bookedSlots[row.date]) {
-                bookedSlots[row.date] = [];
+        rows.forEach(row => {
+            const date = row.get('fecha');
+            const time = row.get('hora');
+            if (date && time) {
+                if (!bookedSlots[date]) {
+                    bookedSlots[date] = [];
+                }
+                bookedSlots[date].push(time);
             }
-            bookedSlots[row.date].push(row.time);
         });
         res.json(bookedSlots);
     } catch (error) {
@@ -59,14 +61,19 @@ app.post('/api/reserve', async (req, res) => {
     }
 
     try {
-        const checkResult = await pool.query('SELECT * FROM reservations WHERE date = $1 AND time = $2 AND status = $3', [date, time, 'reservado']);
-        if (checkResult.rowCount > 0) {
+        const sheet = doc.sheetsByIndex[0];
+
+        // Sección 1: Verificar si la hora ya está reservada
+        const rows = await sheet.getRows();
+        const isBooked = rows.some(row => row.get('fecha') === date && row.get('hora') === time);
+        if (isBooked) {
             return res.status(409).json({ error: 'Esta hora ya ha sido reservada.' });
         }
 
-        const insertResult = await pool.query('INSERT INTO reservations (date, time) VALUES ($1, $2) RETURNING *', [date, time]);
+        // Sección 2: Insertar la nueva reserva
+        await sheet.addRow({ fecha: date, hora: time });
 
-        res.json({ message: 'Reserva registrada con éxito.', reservation: insertResult.rows[0] });
+        res.json({ message: 'Reserva registrada con éxito.', reservation: { date, time } });
     } catch (error) {
         console.error('Error al registrar la reserva:', error.message);
         res.status(500).json({ error: 'Error al registrar la reserva.' });
@@ -76,5 +83,4 @@ app.post('/api/reserve', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor escuchando en el puerto ${PORT}`);
-    initializeDb();
 });
