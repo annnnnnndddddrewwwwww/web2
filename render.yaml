@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: novashop-backend
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SHEET_ID
+        sync: false
+      - key: CLIENT_EMAIL
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: CALENDAR_ID
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
